@@ -7,7 +7,7 @@ import time
 
 # Parameters
 matrix_size = (1000, 1000, 1000)
-threads_list = [1, 2, 4, 8, 12]
+threads_list = [1, 2, 4, 8]
 num_runs = 5
 
 executables = {
@@ -81,6 +81,9 @@ left_times, left_stds, right_times, right_stds = get_data("time")
 plt.figure()
 plt.errorbar(threads_list, left_times, yerr=left_stds, label="LayoutLeft", fmt='-o', capsize=5)
 plt.errorbar(threads_list, right_times, yerr=right_stds, label="LayoutRight", fmt='-s', capsize=5)
+# Ideal Runtime Line
+ideal_runtime = [left_times[0] / t for t in threads_list]
+plt.plot(threads_list, ideal_runtime, '--', label="Ideal Scaling (Runtime)")
 plt.xlabel("Number of Threads")
 plt.ylabel("Runtime (s)")
 plt.title("Strong Scaling: Runtime vs Threads")
@@ -95,6 +98,10 @@ left_gflops, left_gflops_std, right_gflops, right_gflops_std = get_data("gflops"
 plt.figure()
 plt.errorbar(threads_list, left_gflops, yerr=left_gflops_std, label="LayoutLeft", fmt='-o', capsize=5)
 plt.errorbar(threads_list, right_gflops, yerr=right_gflops_std, label="LayoutRight", fmt='-s', capsize=5)
+# Ideal GFLOP/s Line
+ideal_gflops = [left_gflops[0] * t for t in threads_list]
+plt.plot(threads_list, ideal_gflops, '--', label="Ideal Scaling (GFLOP/s)")
+
 plt.xlabel("Number of Threads")
 plt.ylabel("Performance (GFLOP/s)")
 plt.title("Strong Scaling: GFLOP/s vs Threads")
@@ -110,6 +117,8 @@ right_speedup = [right_times[0] / t for t in right_times]
 plt.figure()
 plt.plot(threads_list, left_speedup, '-o', label="LayoutLeft")
 plt.plot(threads_list, right_speedup, '-s', label="LayoutRight")
+# Ideal Speedup Line
+plt.plot(threads_list, threads_list, '--', label="Ideal Speedup")
 plt.xlabel("Number of Threads")
 plt.ylabel("Speedup")
 plt.xscale('log', base=2)

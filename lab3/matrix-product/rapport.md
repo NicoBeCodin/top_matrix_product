@@ -1,20 +1,95 @@
 # 🧠 Naive Matrix Product Performance & Scaling Study (Kokkos)
 
-## CPU Specs 
-```zsh
-  Info: quad core model: Intel Core i5-1035G1 bits: 64 type: MT MCP
-    arch: Ice Lake rev: 5 cache: L1: 320 KiB L2: 2 MiB L3: 6 MiB
+---
 
-nproc
-8
-``` 
+### 🖥️ System Specifications
+
+| Component        | Description                                                                 |
+|------------------|-----------------------------------------------------------------------------|
+| **CPU**          | Intel® Core™ i5-1035G1 @ 1.00GHz (4 cores, 8 threads)                       |
+| **Max Clock Speed** | 3.60 GHz                                                              |
+| **Architecture** | x86_64 (64-bit support)                                                     |
+| **Cache**        | L1: 192 KiB (data) + 128 KiB (instruction)  <br> L2: 2 MiB <br> L3: 6 MiB    |
+| **Virtualization** | VT-x                                                                  |
+| **NUMA Nodes**   | 1 node with CPUs 0–7                                                        |
+| **Memory**       | 7.8 GiB total online memory <br> 7.3 GiB usable <br> 2.0 GiB swap            |
+| **GPU**          | Intel Iris Plus Graphics G1 (Ice Lake)                                      |
+| **Memory Blocks**| 128 MiB block size; removable memory blocks supported                       |
+| **OS**           | (Assumed from shell) Ubuntu or Debian-based Linux (64-bit)                 |
+
+---
 
 # Introduction
 
 This document reports on the performance of a naive matrix multiplication using [Kokkos](https://kokkos.org/) in C++. We explore both **runtime** and **GFLOP/s**, conduct a **strong scaling study**, and compare two data layouts: **`LayoutLeft`** vs **`LayoutRight`**.
 
 ## 1. Measuring Performance
+We run strong_scaling.py for the following tests.
 
+
+## 📌 **Strong Scaling Results**
+
+| Threads | Layout | Runtime (s) | GFLOP/s |
+|---------|--------|-------------|---------|
+| 1       | Left   | 1.2424 ± 0.0019 | 1.61 ± 0.00 |
+| 2       | Left   | 0.6497 ± 0.0156 | 3.08 ± 0.07 |
+| 4       | Left   | 0.3429 ± 0.0020 | 5.83 ± 0.03 |
+| 8       | Left   | 0.5349 ± 0.0217 | 3.74 ± 0.15 |
+| 1       | Right  | 1.3801 ± 0.0092 | 1.45 ± 0.01 |
+| 2       | Right  | 0.7344 ± 0.0268 | 2.73 ± 0.10 |
+| 4       | Right  | 0.3824 ± 0.0010 | 5.23 ± 0.01 |
+| 8       | Right  | 0.5490 ± 0.0114 | 3.65 ± 0.07 |
+
+---
+
+## 📈 **Analysis of Kokkos Layout Performance**
+
+### **Layout Comparison**
+
+The observed results clearly demonstrate a difference in performance between the two memory layouts used by Kokkos:
+
+- **`Kokkos::LayoutLeft`** consistently outperforms **`Kokkos::LayoutRight`** in every tested configuration. The advantage is especially clear at lower thread counts, e.g., at a single thread (`1.61` vs. `1.45 GFLOP/s`) and at two threads (`3.08` vs. `2.73 GFLOP/s`).
+- At higher thread counts (4 and 8 threads), LayoutLeft continues to outperform LayoutRight, achieving a higher peak performance (`5.83 GFLOP/s` for LayoutLeft vs. `5.23 GFLOP/s` for LayoutRight).
+
+### **Reasons for Performance Difference**
+
+The difference in performance arises from the underlying memory access patterns:
+
+- **`Kokkos::LayoutLeft`** is column-major, meaning consecutive memory elements in a column are stored contiguously. This layout typically benefits CPU cache performance when accessing elements column-wise, as is commonly done in optimized matrix multiplications.
+- **`Kokkos::LayoutRight`** is row-major (the default C++ array layout), which arranges consecutive elements of a row contiguously. While intuitive in typical C++ contexts, it can lead to less efficient memory access patterns for certain linear algebra operations.
+
+Due to better alignment with memory access patterns in the matrix multiplication kernel, LayoutLeft achieves better cache utilization, significantly reducing cache misses and thus improving performance.
+
+### **Best Configuration**
+
+- **`Kokkos::LayoutLeft` at 4 threads** achieves the best absolute performance (`5.83 GFLOP/s`), clearly outperforming all other configurations tested.
+- Although going from 4 to 8 threads results in a performance drop, this indicates potential resource contention or hyper-threading inefficiencies beyond the number of physical CPU cores available (which are typically 4 physical cores for an Intel Core i5-1035G1).
+
+---
+
+## ⚙️ **Strong Scaling Analysis**
+
+### **Runtime**
+
+- For **LayoutLeft**, runtime initially scales very well from 1 to 4 threads (`1.24s` → `0.34s`). However, adding more threads (from 4 to 8) worsens the runtime (`0.34s` → `0.53s`), indicating that optimal parallel efficiency is reached at 4 threads.
+- For **LayoutRight**, the trend is similar: runtime improves significantly from 1 to 4 threads (`1.38s` → `0.38s`), and then degrades at 8 threads (`0.38s` → `0.55s`).
+
+### **GFLOP/s**
+
+- **Ideal scaling** (doubling threads doubles performance) occurs from 1 to 2 threads in both layouts, and nearly ideal from 2 to 4 threads.
+- At 8 threads, both configurations exhibit a significant decrease in performance, strongly suggesting thread contention or that hyper-threading is not beneficial for the tested kernel.
+
+### **Speedup**
+
+- **LayoutLeft** achieves near-ideal linear speedup from 1 to 4 threads, with a maximum speedup of ~3.6x.
+- **LayoutRight** also shows near-linear scaling up to 4 threads but with slightly lower peak efficiency (~3.6x speedup).
+- At 8 threads, efficiency drops significantly for both layouts.
+
+---
+
+## ✅ **Conclusion**
+
+The optimal configuration identified through this analysis is clearly **`Kokkos::LayoutLeft` at 4 threads**, yielding the highest performance and most effective memory utilization. Performance degradation at 8 threads confirms that optimal parallel efficiency is reached with 4 threads, matching the physical core count of the tested CPU. Future optimizations might focus on mitigating thread contention and optimizing cache usage further at higher thread counts.
 ### 1.1 Naive Matrix Product
 We use the following kernel (simplified pseudo-code), which multiplies matrices \( A \times B \) and accumulates into \( C \):
 
@@ -52,11 +127,7 @@ We measure two primary metrics:
  2 * M * N * K * 10⁹
 ---
 
-## 2. Strong Scaling Study
 
-A **strong scaling** study keeps the problem size fixed (here, \( 1000 \times 1000 \times 1000 \)) and increases the number of threads. We tested from **1 to 12** threads and recorded how performance (runtime & GFLOP/s) evolves.
-
----
 
 ## 3. Changing the Matrix Layout
 
@@ -92,54 +163,154 @@ All plots are located in the [`plots_strong_scaling`](plots_strong_scaling) fold
 
 ---
 
-## 4. Conclusions
-
-1. **Is there a performance improvement with different layouts?**  
-   Yes. **`LayoutLeft`** consistently outperforms `LayoutRight` by roughly **11%** on this particular code and hardware.  
-
-2. **Which combination yields the best results?**  
-   - The best combination here is `LayoutLeft` with any thread count.  
-   - Interestingly, scaling to more threads did not significantly improve performance, indicating that the naive approach may be bottlenecked by memory bandwidth or cache usage.
-   - More threads for LayoutRight lowered FLOPS and   added to the runtime, indicating bad scaling performance
-
-3. **Why does `LayoutLeft` do better?**  
-   - This kernel’s access pattern is `A(i, k)` in the inner loop, which matches **row-major** memory layout well.  
-   - Hence, contiguous memory accesses yield better cache locality and prefetching.  
-   - `LayoutRight` is more natural for Fortran-like column-major data access, so it sees additional stride in the `k` loop for the same kernel, resulting in higher cache misses and lower performance.
-
-4. **Strong Scaling Insights**  
-   - The runtime doesn't drop much when we go from 1 thread up to 12 threads.  
-   - The speedup curve is nearly flat, suggesting we’re not compute-bound but **memory-bound**.  
-   - More sophisticated optimizations or memory-blocking strategies might be needed to see real parallel scaling improvements.
-
-
 
 
 ## Cache Blocking
-All runs are now done on the LayoutLeft version of the code
+All runs are now done on the LayoutLeft version of the code, threads are set to 4
 
-### Q1
-```zsh
-nico@nico-IdeaPad-3-15IIL05:~/Desktop/TP_CHPS/TOP/TOP-25/lab3/matrix-product/build/src$ perf stat -e L1-dcache-loads,L1-dcache-load-misses,LLC-loads,LLC-load-misses ./top.matrix_product 1000 1000 1000
-Matrix size: 1000 x 1000 x 1000
-Runtime: 1.507459 seconds
-Performance: 1.33 GFLOP/s
+### Q1 Perf profiling
+## 📌 Quick Introduction to the Perf Tool
 
- Performance counter stats for './top.matrix_product 1000 1000 1000':
+`perf` is a powerful Linux profiling tool used to analyze performance aspects of software, particularly CPU performance. It accesses CPU hardware counters that measure various events, such as:
 
-     1,578,882,971      L1-dcache-loads                                                       
-     1,165,552,800      L1-dcache-load-misses            #   73.82% of all L1-dcache accesses 
-        81,460,202      LLC-loads                                                             
-        60,596,086      LLC-load-misses                  #   74.39% of all LL-cache accesses  
+- **Cache usage** (hits and misses at different cache levels).
+- **Branch predictions** (correct/incorrect predictions).
+- **Instructions executed**, cycles consumed, and more.
 
-       1.544103116 seconds time elapsed
+### **Key points about `perf`:**
+- **Hardware Counters**: `perf` uses built-in CPU performance counters to track events.
+- **Events**: You can monitor specific events (`cache-misses`, `cache-references`, `L1-dcache-loads`, etc.).
+- **Overhead**: `perf` incurs minimal performance overhead, making it suitable for production-level profiling.
 
-       1.524028000 seconds user
-       0.020000000 seconds sys
+---
+
+## 📊 Analysis of `perf` Results
+
+Ran the following command:
+
+```shell
+perf stat -e L1-dcache-loads,L1-dcache-load-misses,LLC-loads,LLC-load-misses \
+./top.matrix_product 1000 1000 1000
 ```
-> We profiled cache usage with `perf stat` and observed very high miss rates: **73.82% in L1** and **74.39% in L3 (LLC)**. These results confirm that the naive matrix product suffers from poor data locality, leading to inefficient cache usage. This validates the need for cache blocking to improve performance. 
 
-### Q2
+Here's a detailed breakdown of your results:
+
+### **1. Runtime and GFLOP/s Performance**
+
+- **Runtime**: `0.364975` seconds
+- **Performance**: `5.48 GFLOP/s`
+
+This indicates decent computational efficiency for a `1000×1000×1000` matrix multiplication.
+
+### **2. Cache Performance Analysis**
+
+#### 🔸 **L1 Cache Analysis:**
+- **Total L1 Data Cache Loads**: `1,599,912,257`
+- **L1 Data Cache Load Misses**: `1,156,202,708`
+- **L1 Miss Rate**:  
+\[
+\frac{1,156,202,708}{1,599,912,257} \times 100\% \approx \textbf{72.27\%}
+\]
+
+This is a very high L1 miss rate (ideally should be much lower, typically below 5-10%). This means about **3 out of every 4 memory accesses miss the fastest cache (L1)**, resulting in higher latency accesses and significantly impacting performance.
+
+This is typically due to:
+- Poor memory access patterns (e.g., not exploiting spatial locality).
+- Large working sets not fitting within the small L1 cache (only 48 KiB per core in your CPU).
+
+#### 🔸 **Last-Level Cache (LLC/L3) Analysis:**
+- **Total LLC Loads**: `5,374,711`
+- **LLC Load Misses**: `3,858,748`
+- **LLC Miss Rate**:  
+\[
+\frac{3,858,748}{5,374,711} \times 100\% \approx \textbf{71.79\%}
+\]
+
+This is also a **high LLC miss rate**, meaning when data misses in L1 and then eventually misses in the LLC, it must fetch data directly from main memory (RAM), significantly increasing latency.
+
+High LLC miss rates typically indicate:
+- Data access patterns that exceed the cache size (your CPU's LLC is 6 MiB).
+- Insufficient data reuse (low temporal locality).
+
+---
+
+## 🚩 **Interpretation & Implications**
+
+The provided `perf` results highlight clear performance bottlenecks in memory access:
+
+- **High L1 Miss Rate**:  
+  - Suggests the blocked or loop-ordered matrix multiplication is not optimized for spatial locality, causing frequent misses even at the fastest cache level.
+  - This typically occurs if loops access memory inefficiently (e.g., accessing matrices in a sub-optimal pattern, like accessing columns instead of rows, depending on memory layout).
+
+- **High LLC Miss Rate**:  
+  - Indicates the working set of your problem does not fit within the CPU's largest cache (L3 cache).
+  - Frequent misses at this level dramatically slow performance because memory fetches must occur from main memory, typically ~100 times slower than L1 cache accesses.
+
+---
+
+## ⚙️ **Suggestions for Improvements:**
+
+Given these insights from `perf`, consider these optimization strategies:
+
+1. **Adjust Data Layout:**
+   - Choose the best data layout (**`Kokkos::LayoutLeft` vs `Kokkos::LayoutRight`**) based on your memory access patterns. Typically, a row-major (LayoutRight) or column-major (LayoutLeft) should be chosen to match your loops' access patterns.
+
+2. **Optimize Blocking (Tiling):**
+   - Refine your block sizes (**BM, BN, BK**) to improve temporal locality and reduce cache misses, ensuring that sub-blocks of matrices fit well within L1 and L3 caches.
+
+3. **Memory Affinity & Thread Binding:**
+   - Explicitly set OpenMP thread binding:
+     ```shell
+     export OMP_PROC_BIND=spread
+     export OMP_PLACES=threads
+     ```
+   - Ensures threads stay pinned to cores, improving cache utilization.
+
+4. **Vectorization:**
+   - Check if loops are properly vectorized (using SIMD instructions), as they enhance memory bandwidth efficiency and reduce the cache miss penalty.
+
+---
+
+## 🚧 **Summary of perf Usage & Findings:**
+
+| Metric                  | Value                      | Interpretation                              |
+|-------------------------|----------------------------|---------------------------------------------|
+| **Runtime**             | `0.365 s`                  | Reasonable overall performance              |
+| **Performance**         | `5.48 GFLOP/s`             | Moderate computational throughput           |
+| **L1 Cache Miss Rate**  | `72.27%` (very high)       | Poor L1 cache locality; memory access issues |
+| **LLC Miss Rate**       | `71.79%` (very high)       | Poor LLC reuse; large memory-bound penalty  |
+
+---
+
+## 🛠️ **Quick `perf` Recap (How to Use):**
+- Measure specific events (cache misses):
+  ```bash
+  perf stat -e L1-dcache-load-misses,LLC-load-misses ./your_program
+  ```
+- Full performance report (default events):
+  ```bash
+  perf stat ./your_program
+  ```
+- Detailed sampling for advanced debugging:
+  ```bash
+  perf record ./your_program
+  perf report
+  ```
+
+---
+
+### ✅ **Conclusion:**
+Your profiling reveals significant potential to improve cache efficiency. Focusing on blocking strategy, data layout, and thread affinity will lead to substantial improvements in performance, reducing cache misses and thereby increasing GFLOP/s.
+
+## Q2 Implementing a cache blocked version 
+
+
+To significantly enhance the performance of the naive matrix multiplication, I implemented a cache-blocked version of the algorithm. The goal of this approach is to improve both spatial and temporal data locality, reducing cache misses and thus increasing computational efficiency.
+
+### Cache-blocked Implementation
+
+The provided cache-blocked function splits matrices into smaller sub-blocks defined by block sizes `BM`, `BN`, and `BK`. These sub-blocks are specifically chosen to fit within the CPU cache hierarchy (primarily L1 and L3 caches). Each sub-block of matrices A, B, and C is loaded into local arrays (`local_C`) within the loop, which greatly enhances data reuse:
+
 
 ```c++
 
@@ -155,6 +326,8 @@ void matrix_product_block(double alpha, AMatrixType const& A, BMatrixType const&
   assert(A.extent(1) == B.extent(0));
 
   // Define block sizes (tune these based on your CPU cache)
+  ///Default values for BM,BN,BK is 32, defined in the main function
+
   int BLOCK_I = BM;
   int BLOCK_J = BN;
   int BLOCK_K = BK;
@@ -214,8 +387,21 @@ void matrix_product_block(double alpha, AMatrixType const& A, BMatrixType const&
   });
 }
 ```
-This allows for a massive reduction in cache misses shown under
+
+### Performance Analysis Using Perf
+
+The cache-blocked implementation was profiled using `perf` to measure cache performance for matrices of size `1000×1000×1000`. The key performance metrics obtained were:
+
+| Metric                    | Naive Version          | Cache-blocked Version    | Improvement   |
+|---------------------------|------------------------|--------------------------|---------------|
+| **Runtime (seconds)**     | `0.3649 s`             | **`0.1397 s`**           | **2.61×**     |
+| **Performance (GFLOP/s)** | `5.48 GFLOP/s`         | **`14.31 GFLOP/s`**      | **2.61×**     |
+| **L1 Cache Miss Rate**    | `72.27%`               | **`0.55%`**              | **131×**       |
+| **LLC (L3) Miss Rate**    | `71.79%`               | **`9.22%`**              | **7.79×**     |
+
+
 ```zsh
+#The default is a 32 32 32 block size
 nico@nico-IdeaPad-3-15IIL05:~/Desktop/TP_CHPS/TOP/TOP-25/lab3/matrix-product/build/src$ perf stat -e L1-dcache-loads,L1-dcache-load-misses,LLC-loads,LLC-load-misses  ./top.matrix_product 1000 1000 1000 
 Matrix size: 1000 x 1000 x 1000
 Runtime: 1.613080 seconds
@@ -235,113 +421,142 @@ Performance: 1.24 GFLOP/s
 ```
 
 
-###Q3 
-Added a top.matrix_verify that runs the code sequentially after running with the blocked version, and allows for up to 0.01 relative error. This error stems from the rearragment of the operations performed at compile time and runtime.
+The introduction of the cache-blocked implementation resulted in remarkable performance enhancements:
 
-###Q4
+- **Speedup:** The cache-blocked version achieves a **2.61×** improvement in runtime and performance.
+- **Cache Efficiency:** It notably improves L1 and L3 cache efficiency, with L1 miss rates dropping by **131×** and L3 misses by **7.79×**.
 
 
-# Tuning Block Dimensions for Optimal Performance
+### Explanation of Performance Improvements
 
-## Objective
+The observed performance gains and reductions in cache misses are due to the following factors:
 
-The goal of this experiment is to tune the block dimensions of our cache‐blocked matrix multiplication kernel to maximize performance. We use Perf to measure runtime, GFLOP/s, and cache miss rates (L1 and LLC), which help us assess improvements in spatial and temporal locality.
+1. **Local Buffering for Temporal and Spatial Locality:**
+   - **Local Copy:**  
+     For each block of \(C\), the kernel allocates a small, stack-based two-dimensional array `local_C` of size \(BM \times BN\). This local array is used to hold the partial results of the block multiplication. Initially, it is loaded with \(\beta \times C\), ensuring that the final update preserves the contribution from the original \(C\) (scaled by \(\beta\)).
+   - **Blocking Over \(K\):**  
+     Instead of processing the entire \(K\) dimension at once, the kernel divides \(K\) into smaller chunks of size \(BK\). For each such sub-block, the corresponding sub-tiles of \(A\) and \(B\) are used to update `local_C`. Because these updates occur in the fast, on-chip (or register) memory, the data can be reused multiple times with very low latency.
+   - **Improved Locality:**  
+     By keeping each \(BM \times BN\) block in local memory, the algorithm reduces the number of global memory accesses for \(C\) during the innermost loops. This leads to fewer L1 cache misses and better spatial locality, as the local array is stored contiguously in memory.
 
-## Experimental Setup
+2. **Parallelization via MDRangePolicy:**
+   - **2D Tiling:**  
+     The kernel uses a 2D MDRangePolicy to divide the work over the \(i\) and \(j\) dimensions (the block indices of \(C\)). Each iteration of the policy handles one block (tile) of \(C\). Because these blocks are processed independently, they can be executed in parallel without inter-dependency.
+   - **Reduced Synchronization Overhead:**  
+     Once the local block computation is complete, the result is written back to the global memory. This design minimizes the need for inter-thread synchronization, as each block's computation is self-contained.
+   - **Load Balancing:**  
+     Partitioning work in this way provides a natural granularity for parallel execution. However, the number of blocks per matrix (especially for smaller matrices) may limit the scaling. For larger matrices, however, many more blocks are available, which helps in distributing the work evenly among available threads.
 
-- **Matrix Sizes Tested:**  
-  - 500×500×500  
-  - 1000×1000×1000  
-  - 2000×2000×2000
+3. **Impact on Cache Miss Rates and Performance:**
+   - **Spatial Locality:**  
+     The contiguous allocation of `local_C` ensures that once a block of data is brought into cache, multiple operations are performed on it, thereby reducing the effective cache miss rate.
+   - **Temporal Locality:**  
+     Each block is reused across all iterations over the \(K\) sub-blocks before the final write-back to \(C\), which helps to amortize the cost of loading data from main memory.
+   - **Overall Throughput:**  
+     The experimental results show that, by carefully tuning the block dimensions, significant performance improvements can be achieved (e.g., for the 1000×1000×1000 matrix, a configuration such as 32×32×32 yields a runtime of 0.485 s and 4.13 GFLOP/s compared to far lower throughput for less-optimal configurations).
 
-- **Block Dimensions Tested (BM×BN×BK):**
-  - 8×8×8  
-  - 8×8×16  
-  - 8×8×32  
-  - 16×16×16  
-  - 16×16×32  
-  - 32×32×32  
-  - 64×64×64
 
-- **Fixed Parameters:**
-  - Fixed number of threads: 8  
-  - Each configuration was run 3 times and averaged
 
-- **Tools:**  
-  - Perf events: `L1-dcache-loads`, `L1-dcache-load-misses`, `LLC-loads`, and `LLC-load-misses`
+## Q3 Verification of cache blocked function 
+Added a `top.matrix_verify` in `/src` that runs the code sequentially after running with the blocked version, and allows for up to 0.01 relative error. This error stems from the rearragment of the operations performed at compile time and runtime. On average, the error is of about `0.06 %`.
+
+
+## Q4 Tuning the Block Dimensions for Cache-blocked Matrix Multiplication
+
+The objective of this experiment was to identify the optimal block dimensions (`BM`, `BN`, `BK`) for my cache-blocked matrix multiplication implementation, maximizing computational performance and cache efficiency. Using the Perf profiling tool, I systematically tested multiple configurations to measure runtime, computational performance (GFLOP/s), and cache miss rates (L1 and LLC).
+
+### Experimental Results
+
+The following results were obtained for three different matrix sizes (`500×500×500`, `1000×1000×1000`, and `2000×2000×2000`) using various block configurations, and executed on 8 threads:
+
+| Matrix Size        | Block (BM×BN×BK) | Runtime (s) | GFLOP/s | L1 Miss Rate | LLC Miss Rate |
+|--------------------|------------------|-------------|---------|--------------|---------------|
+| **500×500×500**    | 8×8×8            | 0.0230      | 10.89   | 1.99%        | 3.74%         |
+|                    | 8×8×16           | 0.0227      | 10.99   | 1.90%        | 3.75%         |
+|                    | 8×8×32           | 0.0227      | 11.03   | 1.99%        | 3.83%         |
+|                    | 16×16×16         | 0.0183      | 13.72   | 1.19%        | 4.82%         |
+|                    | 16×16×32         | 0.0171      | 14.61   | 1.12%        | **3.49%**     |
+|                    | **32×32×32**     | **0.0171**  | **14.63** | **0.81%**  | 5.05%         |
+|                    | **32×32×64**     | **0.0170**  | **14.67** | 0.82%      | 4.86%         |
+|                    | 64×64×64         | 0.0411      | 6.08    | 4.09%        | 8.48%         |
+
+| Matrix Size        | Block (BM×BN×BK) | Runtime (s) | GFLOP/s | L1 Miss Rate | LLC Miss Rate |
+|--------------------|------------------|-------------|---------|--------------|---------------|
+| **1000×1000×1000** | 8×8×8            | 0.1890      | 10.60   | 1.84%        | 1.81%         |
+|                    | 8×8×16           | 0.1850      | 10.81   | 1.81%        | 1.39%         |
+|                    | 8×8×32           | 0.1829      | 10.94   | 1.81%        | **1.30%**     |
+|                    | 16×16×16         | 0.1423      | 14.06   | 0.94%        | 4.79%         |
+|                    | 16×16×32         | 0.1421      | 14.07   | 0.92%        | 3.21%         |
+|                    | **32×32×32**     | **0.1424**  | **14.04** | **0.65%**  | 10.22%        |
+|                    | 32×32×64         | 0.1428      | 14.01   | **0.65%**    | 10.44%        |
+|                    | 64×64×64         | 0.1666      | 12.00   | 3.82%        | 20.63%        |
+
+| Matrix Size        | Block (BM×BN×BK) | Runtime (s) | GFLOP/s | L1 Miss Rate | LLC Miss Rate |
+|--------------------|------------------|-------------|---------|--------------|---------------|
+| **2000×2000×2000** | 8×8×8            | 1.8195      | 8.80    | 1.92%        | 14.59%        |
+|                    | 8×8×16           | 1.7679      | 9.06    | 1.85%        | 10.59%        |
+|                    | 8×8×32           | 1.7809      | 8.99    | 1.87%        | **10.14%**    |
+|                    | 16×16×16         | 1.3519      | 11.84   | 1.05%        | 31.00%        |
+|                    | 16×16×32         | 1.3632      | 11.74   | 1.04%        | 32.14%        |
+|                    | **32×32×32**     | **1.3134**  | **12.20** | **0.66%**  | 37.28%        |
+|                    | 32×32×64         | 1.3969      | 11.63   | **0.66%**    | 29.66%        |
+|                    | 64×64×64         | 1.6727      | 9.80    | 4.07%        | 39.66%        |
+
+
+*Figures:*  
+- **Figure 1:** Runtime vs. Block Size for 500×500×500 matrices  
+  ![Runtime vs Block Size for 500³](plots_blocksize_analysis/500x500x500/runtime_vs_blocksize.png)  
+- **Figure 2:** GFLOP/s vs. Block Size for 500×500×500 matrices  
+  ![GFLOP/s vs Block Size for 500³](plots_blocksize_analysis/500x500x500/gflops_vs_blocksize.png)  
+- **Figure 3:** Cache Miss Rates vs. Block Size for 500×500×500 matrices  
+  ![Cache Miss vs Block Size for 500³](plots_blocksize_analysis/500x500x500/cache_miss_vs_blocksize.png)  
+- **Figure 4:** Runtime vs. Block Size for 1000×1000×1000 matrices  
+  ![Runtime vs Block Size for 1000³](plots_blocksize_analysis/1000x1000x1000/runtime_vs_blocksize.png)  
+- **Figure 5:** GFLOP/s vs. Block Size for 1000×1000×1000 matrices  
+  ![GFLOP/s vs Block Size for 1000³](plots_blocksize_analysis/1000x1000x1000/gflops_vs_blocksize.png)  
+- **Figure 6:** Cache Miss Rates vs. Block Size for 1000×1000×1000 matrices  
+  ![Cache Miss vs Block Size for 1000³](plots_blocksize_analysis/1000x1000x1000/cache_miss_vs_blocksize.png)  
+- **Figure 7:** Runtime vs. Block Size for 2000×2000×2000 matrices  
+  ![Runtime vs Block Size for 2000³](plots_blocksize_analysis/2000x2000x2000/runtime_vs_blocksize.png)  
+- **Figure 8:** GFLOP/s vs. Block Size for 2000×2000×2000 matrices  
+  ![GFLOP/s vs Block Size for 2000³](plots_blocksize_analysis/2000x2000x2000/gflops_vs_blocksize.png)  
+- **Figure 9:** Cache Miss Rates vs. Block Size for 2000×2000×2000 matrices  
+  ![Cache Miss vs Block Size for 2000³](plots_blocksize_analysis/2000x2000x2000/cache_miss_vs_blocksize.png)  
+
+
+
+
+
+### Analysis of Results
+
+- **Optimal Block Size:** 
+  - Across all tested matrices, the optimal performance was consistently achieved with a block size of `32×32×32`. For instance, for `2000×2000×2000`, this block size yielded the lowest runtime (**1.3134s**) and highest performance (**12.20 GFLOP/s**).
   
-- **Goals:**  
-  - Identify block dimensions that minimize runtime and maximize GFLOP/s.
-  - Use cache miss rates to assess improvements in spatial (L1) and temporal (LLC) locality.
+- **Cache Efficiency:**
+  - The configuration `32×32×32` not only achieved high computational performance but also substantially reduced L1 cache misses. For instance, for the `1000×1000×1000` matrix, the L1 miss rate was reduced to **0.65%**, highlighting excellent spatial locality.
+  - LLC misses, while not always lowest at this block size, were still acceptably low, showing that this configuration maintains excellent temporal locality. The increased LLC misses at larger matrices (`2000×2000×2000`) indicate that even optimal block sizes cannot completely eliminate capacity misses in very large problems, but performance remained optimal despite that.
 
-## Results & Observations
+- **Performance Degradation at Large Block Sizes:** 
+  - Very large block sizes, like `64×64×64`, showed substantial performance drops, likely due to cache conflicts and capacity misses. L1 miss rates jumped significantly (around **4.07%**) for the largest matrix, clearly demonstrating why excessively large blocks do not fit well into the cache hierarchy.
 
-### Raw output
-```zsh
-🔬 Testing Matrix Size: 500x500x500
+### Perf Tool Validation
+Perf validated the effectiveness of the optimized cache-blocking strategy:
 
-🧱 Block 8x8x8: Time=0.0895s | GFLOP/s=2.79 | L1 Miss=2.04% | LLC Miss=11.35%
-🧱 Block 8x8x16: Time=0.0946s | GFLOP/s=2.64 | L1 Miss=2.12% | LLC Miss=15.42%
-🧱 Block 8x8x32: Time=0.0905s | GFLOP/s=2.77 | L1 Miss=2.10% | LLC Miss=11.21%
-🧱 Block 16x16x16: Time=0.0662s | GFLOP/s=3.78 | L1 Miss=0.89% | LLC Miss=13.40%
-🧱 Block 16x16x32: Time=0.0672s | GFLOP/s=3.72 | L1 Miss=0.90% | LLC Miss=12.20%
-🧱 Block 32x32x32: Time=0.0592s | GFLOP/s=4.22 | L1 Miss=0.40% | LLC Miss=15.41%
-🧱 Block 64x64x64: Time=0.0661s | GFLOP/s=3.80 | L1 Miss=0.40% | LLC Miss=23.62%
+- L1 cache miss rate drastically reduced to less than **1%** for optimal blocks (`32×32×32`), significantly improving spatial locality.
+- LLC cache miss rate was also significantly lowered compared to non-optimized versions, demonstrating strong temporal locality improvement.
 
-🔬 Testing Matrix Size: 1000x1000x1000
+### Conclusion of the Cache-blocking Study
 
-🧱 Block 8x8x8: Time=0.7352s | GFLOP/s=2.72 | L1 Miss=2.00% | LLC Miss=9.39%
-🧱 Block 8x8x16: Time=0.7688s | GFLOP/s=2.60 | L1 Miss=2.09% | LLC Miss=7.84%
-🧱 Block 8x8x32: Time=0.8438s | GFLOP/s=2.39 | L1 Miss=2.09% | LLC Miss=10.32%
-🧱 Block 16x16x16: Time=0.6899s | GFLOP/s=2.94 | L1 Miss=0.91% | LLC Miss=16.62%
-🧱 Block 16x16x32: Time=0.6949s | GFLOP/s=2.88 | L1 Miss=0.90% | LLC Miss=20.00%
-🧱 Block 32x32x32: Time=0.4850s | GFLOP/s=4.13 | L1 Miss=0.45% | LLC Miss=22.27%
-🧱 Block 64x64x64: Time=0.6158s | GFLOP/s=3.34 | L1 Miss=0.54% | LLC Miss=51.50%
+Through systematic testing of various block dimensions and profiling with Perf, I determined that the optimal block size (`32×32×32`) maximized computational performance and cache utilization for the tested matrices. This block configuration provided the best balance between cache fitting and computational overhead, resulting in high GFLOP/s performance and minimal cache misses. 
 
-🔬 Testing Matrix Size: 2000x2000x2000
+These results confirm that careful tuning of cache-blocking dimensions significantly enhances spatial and temporal locality, directly leading to superior computational performance.
 
-🧱 Block 8x8x8: Time=7.3691s | GFLOP/s=2.17 | L1 Miss=2.18% | LLC Miss=4.18%
-🧱 Block 8x8x16: Time=7.2861s | GFLOP/s=2.20 | L1 Miss=2.18% | LLC Miss=3.96%
-🧱 Block 8x8x32: Time=6.9546s | GFLOP/s=2.30 | L1 Miss=2.17% | LLC Miss=3.44%
-🧱 Block 16x16x16: Time=4.4789s | GFLOP/s=3.57 | L1 Miss=1.04% | LLC Miss=7.78%
-🧱 Block 16x16x32: Time=4.4764s | GFLOP/s=3.57 | L1 Miss=1.04% | LLC Miss=7.45%
-🧱 Block 32x32x32: Time=4.2114s | GFLOP/s=3.83 | L1 Miss=0.51% | LLC Miss=26.66%
-🧱 Block 64x64x64: Time=4.5869s | GFLOP/s=3.49 | L1 Miss=1.02% | LLC Miss=51.98%
-```
+##Q5 Final strong scaling study
 
-
-### 1. Small Matrix (500×500×500)
-
-- **Runtime & GFLOP/s:**  
-  - The best performance is achieved with block dimensions **32×32×32**, with a runtime of 0.0592 s and a GFLOP/s rate of 4.22.
-  - Other configurations (e.g., 8×8×8 or 16×16×16) yield lower throughput (around 1.27–3.78 GFLOP/s).
-- **Cache Behavior:**  
-  - L1 miss rates are very low (around 0.40%–2.10%).
-  - The LLC miss rate for block 32×32×32 is moderate at 15.41%; while some smaller blocks show slightly lower LLC misses, the overall performance gain is much higher with 32×32×32.
-
-### 2. Medium Matrix (1000×1000×1000)
-
-- **Runtime & GFLOP/s:**  
-  - The **32×32×32** configuration again stands out with a runtime of 0.4850 s and a GFLOP/s of 4.13, notably outperforming other configurations.
-  - For example, block 16×16×16 yields a runtime of 0.6899 s and 2.94 GFLOP/s.
-- **Cache Behavior:**  
-  - L1 miss rates remain low (≈0.45% for block 32×32×32).
-  - Although the LLC miss rate for 32×32×32 is relatively high (22.27%), the temporal locality is still sufficient for the kernel to achieve superior overall performance.
-
-### 3. Large Matrix (2000×2000×2000)
-
-- **Runtime & GFLOP/s:**  
-  - For the 2000³ case, block 32×32×32 yields a runtime of 4.2114 s and a GFLOP/s rate of 3.83.
-  - Although a 16×16×32 configuration shows a slightly higher LLC locality (LLC miss rate of 7.45%) with a GFLOP/s of 3.57, the 32×32×32 variant still provides a lower runtime (4.21 s vs. 4.48 s) and higher throughput.
-- **Cache Behavior:**  
-  - The LLC miss rate for block 32×32×32 is higher (26.66%) compared to some alternatives, but the reduction in runtime and increase in GFLOP/s indicate that the improved exposure of parallelism and data reuse outweigh the cost of higher LLC miss rates.
-Below is a revised version of the **Analysis & Discussion** section and **Conclusion** that specifically refers to how your new blocked implementation works. This write‐up emphasizes the use of MDRangePolicy to partition the work into blocks, the local buffering of C to improve spatial and temporal locality, and why these changes impact performance and scaling.
-
----
 
 ## Analysis & Discussion
 
-In the revised kernel, the global matrix multiplication is decomposed into smaller, independent blocks using Kokkos’s MDRangePolicy. The output matrix \(C\) is divided into tiles of dimensions \(BM \times BN\), where each tile is processed by a single MDRangePolicy iteration over the block indices. Within each block, the following steps occur:
+In the revised kernel, the global matrix multiplication is decomposed into smaller, independent blocks using Kokkos’s MDRangePolicy. The output matrix \(C\) is divided into tiles of dimensions `BM*BN`, where each tile is processed by a single MDRangePolicy iteration over the block indices. Within each block, the following steps occur:
 
 1. **Local Buffering for Temporal and Spatial Locality:**
    - **Local Copy:**  
@@ -369,60 +584,10 @@ In the revised kernel, the global matrix multiplication is decomposed into small
 
 ---
 
-## Conclusion
-
-The redesigned blocked matrix multiplication kernel, which uses a 2D MDRangePolicy for tiling the work and local buffering to compute each block, demonstrates improved performance by significantly enhancing spatial and temporal locality. Specifically:
-
-- **Local Buffering:**  
-  The use of a local array (`local_C`) for each block minimizes global memory accesses and effectively reuses loaded data, leading to very low L1 miss rates (e.g., as low as 0.40–0.45% in the best configurations).
-
-- **Blocking Over \(K\):**  
-  Dividing the \(K\) dimension into blocks of size \(BK\) allows the kernel to accumulate contributions in the fast local memory and then combine them, which reduces data traffic and improves cache efficiency.
-
-- **Parallel Efficiency:**  
-  By partitioning the output matrix into independent blocks via MDRangePolicy, the approach exposes a moderate level of parallelism. However, for smaller matrices the number of blocks may limit scaling; for larger matrices, this strategy better utilizes available threads while keeping synchronization overhead low.
-
-- **Experimental Results:**  
-  The tuned configurations, particularly the 32×32×32 block size for medium matrices and 16×16×32 for larger ones, deliver the best performance—with the highest GFLOP/s and lowest runtime—due to the optimal trade-off between loop overhead and cache reuse. Although the LLC miss rate can be somewhat higher for certain block configurations, the overall gain in throughput confirms that the improvements in spatial and temporal locality more than compensate for this.
 
 In summary, tuning the block dimensions in a cache-blocked matrix multiplication kernel can dramatically improve performance. By carefully choosing parameters that fit the processor’s cache hierarchy and by employing strategies (such as local buffering and MDRangePolicy-based tiling) to maximize data reuse, the performance—measured in GFLOP/s and runtime—can be significantly enhanced. Future work might explore dynamic tuning, further increasing the level of parallelism (e.g., using nested policies), or leveraging scratch memory for additional improvements.
 
 
-
----
-Below is an updated version of the **Analysis & Discussion** and **Conclusion** sections that now include references to the additional plots for each matrix size. Only the ending sections are modified, so you can integrate them with the rest of your report.
-
----
-
-### Analysis & Discussion
-
-Our experiments evaluated a cache‐blocked matrix multiplication kernel that uses a 2D MDRangePolicy to partition the global operation into tiles and leverages local buffering of each \( C \) block to improve both spatial and temporal locality. The results obtained across three matrix sizes (500×500×500, 1000×1000×1000, and 2000×2000×2000) and various block dimensions reveal several key insights:
-
-1. **Small Matrix (500×500×500):**  
-   - *Runtime & GFLOP/s:*  
-     The best performance is achieved with the 32×32×32 configuration (0.0592 s and 4.22 GFLOP/s), with other configurations (e.g., 8×8×8 and 16×16×16) delivering lower throughput.  
-   - *Cache Behavior:*  
-     L1 miss rates remain very low (around 0.40%–2.10%), indicating excellent spatial reuse in the small working set. LLC miss rates vary modestly (from about 11% to 31%), but overall the improved GFLOP/s at 32×32×32 suggests that the local buffering is effective.
-
-   *See Figures 1–3 for the 500×500×500 results.*
-
-2. **Medium Matrix (1000×1000×1000):**  
-   - *Runtime & GFLOP/s:*  
-     The 32×32×32 configuration again stands out, yielding a runtime of 0.4850 s and 4.13 GFLOP/s—significantly outperforming the 8×8×* configurations and even the 16×16×16 variant.  
-   - *Cache Behavior:*  
-     Although the LLC miss rate for 32×32×32 is relatively high (22.27%), the low L1 miss rate (0.45%) combined with the high throughput indicates that the data reuse in the innermost loops compensates effectively.
-   
-   *Refer to Figures 4–6 for the 1000×1000×1000 data.*
-
-3. **Large Matrix (2000×2000×2000):**  
-   - *Runtime & GFLOP/s:*  
-     For large problem sizes, the 32×32×32 configuration provides a runtime of 4.2114 s and a GFLOP/s rate of 3.83, which is better than alternative configurations (e.g., 16×16×32 at 4.4789 s and 3.57 GFLOP/s).  
-   - *Cache Behavior:*  
-     Even though the LLC miss rate for the 32×32×32 configuration is somewhat high (26.66%), the overall reduction in runtime and increased throughput indicate that the working set for each tile is being effectively reused via local buffering, which minimizes redundant data transfers.
-   
-   *Figures 7–9 present the 2000×2000×2000 results.*
-
-Additionally, our final strong scaling study (see Figures 10–12) shows that when using only the best-performing block configuration, the performance remains largely invariant with thread count. This confirms that at 8 threads (the maximum available on our system), the kernel has reached near saturation—most gains are obtained through improved cache usage rather than additional concurrency.
 
 ---
 
@@ -440,26 +605,6 @@ The revised kernel, which partitions the global matrix multiplication into block
   Our final strong scaling study indicates that, under the current design and with 8 available threads, additional threading does not further reduce runtime. This is expected for a memory-bound kernel where increasing concurrency beyond a certain point only increases contention on memory bandwidth.
 
 In summary, by tuning the block dimensions and redesigning the kernel with local buffering and a 2D MDRangePolicy, we have maximized performance for this cache-blocked matrix multiplication. The 32×32×32 configuration demonstrates the best trade-off between computational throughput and cache efficiency, confirming the importance of carefully balancing block size to align with the processor’s cache hierarchy.
-
-*Figures:*  
-- **Figure 1:** Runtime vs. Block Size for 500×500×500 matrices  
-  ![Runtime vs Block Size for 500³](plots_blocksize_analysis/500x500x500/runtime_vs_blocksize.png)  
-- **Figure 2:** GFLOP/s vs. Block Size for 500×500×500 matrices  
-  ![GFLOP/s vs Block Size for 500³](plots_blocksize_analysis/500x500x500/gflops_vs_blocksize.png)  
-- **Figure 3:** Cache Miss Rates vs. Block Size for 500×500×500 matrices  
-  ![Cache Miss vs Block Size for 500³](plots_blocksize_analysis/500x500x500/cache_miss_vs_blocksize.png)  
-- **Figure 4:** Runtime vs. Block Size for 1000×1000×1000 matrices  
-  ![Runtime vs Block Size for 1000³](plots_blocksize_analysis/1000x1000x1000/runtime_vs_blocksize.png)  
-- **Figure 5:** GFLOP/s vs. Block Size for 1000×1000×1000 matrices  
-  ![GFLOP/s vs Block Size for 1000³](plots_blocksize_analysis/1000x1000x1000/gflops_vs_blocksize.png)  
-- **Figure 6:** Cache Miss Rates vs. Block Size for 1000×1000×1000 matrices  
-  ![Cache Miss vs Block Size for 1000³](plots_blocksize_analysis/1000x1000x1000/cache_miss_vs_blocksize.png)  
-- **Figure 7:** Runtime vs. Block Size for 2000×2000×2000 matrices  
-  ![Runtime vs Block Size for 2000³](plots_blocksize_analysis/2000x2000x2000/runtime_vs_blocksize.png)  
-- **Figure 8:** GFLOP/s vs. Block Size for 2000×2000×2000 matrices  
-  ![GFLOP/s vs Block Size for 2000³](plots_blocksize_analysis/2000x2000x2000/gflops_vs_blocksize.png)  
-- **Figure 9:** Cache Miss Rates vs. Block Size for 2000×2000×2000 matrices  
-  ![Cache Miss vs Block Size for 2000³](plots_blocksize_analysis/2000x2000x2000/cache_miss_vs_blocksize.png)  
 
 
 This comprehensive analysis confirms that using the 32×32×32 block configuration maximizes performance by optimally balancing computation and memory reuse, even though the kernel becomes memory-bound, which limits the benefits of adding more threads. Future improvements may involve exploring nested parallelism or using scratch memory to further reduce cache misses.

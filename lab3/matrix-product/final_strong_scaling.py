@@ -12,12 +12,14 @@ import time
 matrix_sizes = [(500, 500, 500), (1000, 1000, 1000), (2000, 2000, 2000)]
 threads_list = [1, 2, 4, 8]
 num_runs = 5
-block_config = (16, 16, 32)  # Best performing block configuration from earlier tests
+block_config = (32, 32, 32)  # Best performing block configuration from earlier tests
 executable = "./build/src/top.matrix_product"  # Use your chosen executable
 
 # Output directory for final study plots
 plot_dir = "final_plots"
 os.makedirs(plot_dir, exist_ok=True)
+
+print("Block config : ", block_config)
 
 # ------------------------------
 # Run the strong scaling study for each matrix size
@@ -105,6 +107,8 @@ plt.figure()
 for size_label, (thr, runtimes) in runtime_data.items():
     plt.errorbar(thr, runtimes, fmt='-o', label=size_label)
 plt.xlabel("Number of Threads")
+ideal_runtime = [runtimes[0] / t for t in threads_list]
+plt.plot(threads_list, ideal_runtime, '--', label="Ideal Scaling (Runtime)")
 plt.ylabel("Runtime (s)")
 plt.title("Final Strong Scaling: Runtime vs Threads")
 plt.xticks(threads_list)
@@ -118,6 +122,8 @@ plt.figure()
 for size_label, (thr, gflops_vals) in gflops_data.items():
     plt.errorbar(thr, gflops_vals, fmt='-o', label=size_label)
 plt.xlabel("Number of Threads")
+ideal_gflops = [gflops_vals[0] * t for t in threads_list]
+plt.plot(threads_list, ideal_gflops, '--', label="Ideal Scaling (GFLOP/s)")
 plt.ylabel("Performance (GFLOP/s)")
 plt.title("Final Strong Scaling: GFLOP/s vs Threads")
 plt.xticks(threads_list)
@@ -136,6 +142,8 @@ plt.plot(threads_list, ideal_speedup, 'k--', label="Ideal Scaling")
 
 plt.xlabel("Number of Threads")
 plt.ylabel("Speedup")
+# Ideal Speedup Line
+plt.plot(threads_list, threads_list, '--', label="Ideal Speedup")
 plt.title("Final Strong Scaling: Speedup vs Threads")
 plt.xscale('log', base=2)
 plt.yscale('log', base=2)

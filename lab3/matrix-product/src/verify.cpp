@@ -90,75 +90,6 @@ void matrix_product_block(double alpha, AMatrixType const& A, BMatrixType const&
 }
 
 
-// template <class AMatrixType, class BMatrixType, class CMatrixType>
-// auto matrix_product_block(double alpha, 
-//                           AMatrixType const& A, 
-//                           BMatrixType const& B, 
-//                           double beta, 
-//                           CMatrixType& C, 
-//                           int BM, int BN, int BK)
-//   -> void {
-//   static_assert( AMatrixType::rank() == 2 &&
-//                  BMatrixType::rank() == 2 &&
-//                  CMatrixType::rank() == 2,
-//                  "Views must be of rank 2");
-//   assert(A.extent(0) == C.extent(0));
-//   assert(B.extent(1) == C.extent(1));
-//   assert(A.extent(1) == B.extent(0));
-
-//   int M = A.extent(0);
-//   int N = B.extent(1);
-//   int K = A.extent(1);
-
-//   // Determine number of blocks along rows and columns.
-//   int teams_i = (M + BM - 1) / BM;
-//   int teams_j = (N + BN - 1) / BN;
-//   // Total number of teams: one per block of C.
-//   int numTeams = teams_i * teams_j;
-
-//   // Use Kokkos::TeamPolicy to distribute blocks among teams.
-//   using team_policy = Kokkos::TeamPolicy<>;
-//   Kokkos::parallel_for(
-//     "blocked_matmul",
-//     team_policy(numTeams, Kokkos::AUTO), // Kokkos::AUTO lets Kokkos choose team size
-//     KOKKOS_LAMBDA(const typename team_policy::member_type & teamMember) {
-//       // Map team index to block indices
-//       int team_id = teamMember.league_rank();
-//       int bi = team_id / teams_j;   // Block row index
-//       int bj = team_id % teams_j;   // Block column index
-      
-//       int i_start = bi * BM;
-//       int i_end   = (i_start + BM > M ? M : i_start + BM);
-//       int j_start = bj * BN;
-//       int j_end   = (j_start + BN > N ? N : j_start + BN);
-      
-//       // Parallelize over the rows in the block.
-//       Kokkos::parallel_for(
-//         Kokkos::TeamThreadRange(teamMember, i_start, i_end),
-//         [=](int i) {
-//           // Within each row, parallelize over the columns using vector-range.
-//           Kokkos::parallel_for(
-//             Kokkos::ThreadVectorRange(teamMember, j_start, j_end),
-//             [=](int j) {
-//               double acc = beta * C(i,j);
-//               // Process the K-dimension in blocks of size BK.
-//               for (int kk = 0; kk < K; kk += BK) {
-//                 int k_end = (kk + BK > K ? K : kk + BK);
-//                 for (int k = kk; k < k_end; ++k) {
-//                   acc += alpha * A(i,k) * B(k,j);
-//                 }
-//               }
-//               C(i,j) = acc;
-//             }
-//           );
-//         }
-//       );
-//       teamMember.team_barrier();
-//     }
-//   );
-// }
-
-
 int main(int argc, char* argv[]) {
   if (argc < 7) {
     fmt::print("Usage: {} <M> <N> <K> <BM> <BN> <BK>\n", argv[0]);
@@ -207,11 +138,15 @@ int main(int argc, char* argv[]) {
     auto C_ref_host = Kokkos::create_mirror_view(C_ref);
     Kokkos::deep_copy(C_host, C);
     Kokkos::deep_copy(C_ref_host, C_ref);
+    
+    double sum_error = 0.0;
 
     bool correct = true;
     for (int i = 0; i < M && correct; ++i) {
       for (int j = 0; j < N && correct; ++j) {
         double rel_err = std::abs((C_host(i,j) - C_ref_host(i,j)) / C_ref_host(i,j));
+        sum_error += rel_err;
+
         if (rel_err > 0.01) {
           fmt::print("❌ Mismatch at ({}, {}) — got {}, expected {}, rel error {}\n",
                      i, j, C_host(i,j), C_ref_host(i,j), rel_err);
@@ -219,12 +154,14 @@ int main(int argc, char* argv[]) {
         }
       }
     }
-
+    double average_rel_error = sum_error / ((double)N * (double)M);
     if (correct) {
       fmt::print("✅ Blocked matrix product is correct.\n");
     } else {
       fmt::print("❌ Blocked matrix product is incorrect.\n");
     }
+    fmt::print("Average relative error is {} %\n", average_rel_error*100);
+
   }
   Kokkos::finalize();
   return 0;
