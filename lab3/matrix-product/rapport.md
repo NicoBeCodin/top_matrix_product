@@ -1,5 +1,10 @@
-#  Part 1: Naive Matrix Product Performance & Scaling Study 
+# Lab report: Improving a naive matrix product implementation
 
+Nicolas Daix-Moreux
+
+[Link to github repo](https://github.com/NicoBeCodin/top_matrix_product)
+
+#  Part 1: Naive Matrix Product Performance & Scaling Study 
 
 ###  System Specifications
 
@@ -129,7 +134,10 @@ Due to better alignment with memory access patterns in the matrix multiplication
 The optimal configuration identified through this analysis is clearly **`Kokkos::LayoutLeft` at 4 threads**, yielding the highest performance and most effective memory utilization. Running the matrix product with 8 threads results in a performance drop, this indicates potential resource contention or hyper-threading inefficiencies beyond the number of physical CPU cores available (which are typically 4 physical cores for an Intel Core i5-1035G1) Future optimizations might focus on mitigating thread contention and optimizing cache usage further at higher thread counts.
 
 # Part 2: Cache Blocking
-All runs are now done on the `LayoutLeft` version of the code, `OMP_PLACES="cores"`,`OMP_PROC_BIND=true`, `OMP_NUM_THREADS=4` if not specified otherwise.
+## Introduction
+We are now going to optimize the previous naive matrix product by utilizing cache blocking and adjusting block size to try and squeeze out as muich performance as possible out of the 
+
+All runs are now done on the `LayoutLeft` version of the code, `OMP_PLACES="cores"`, `OMP_PROC_BIND=true`, `OMP_NUM_THREADS=4` if not specified otherwise.
 
 ## Q1 Perf profiling
 ### Quick Introduction to the Perf Tool
@@ -145,7 +153,6 @@ All runs are now done on the `LayoutLeft` version of the code, `OMP_PLACES="core
 - **Events**: You can monitor specific events (`cache-misses`, `cache-references`, `L1-dcache-loads`, etc.).
 - **Overhead**: `perf` incurs minimal performance overhead, making it suitable for production-level profiling.
 
-
 ## Analysis of `perf` Results
 
 We run the following command:
@@ -154,7 +161,6 @@ We run the following command:
 perf stat -e L1-dcache-loads,L1-dcache-load-misses,LLC-loads,LLC-load-misses \
 ./top.matrix_product 1000 1000 1000
 ```
-
 
 
 | Metric                  | Value                      | Interpretation                              |
@@ -425,61 +431,8 @@ Through systematic testing of various block dimensions and profiling with Perf, 
 
 These results confirm that careful tuning of cache-blocking dimensions significantly enhances spatial and temporal locality, directly leading to superior computational performance.
 
-## Q5 Final strong scaling study
 
-## Analysis & Discussion
-
-In the revised kernel, the global matrix multiplication is decomposed into smaller, independent blocks using Kokkos’s MDRangePolicy. The output matrix \(C\) is divided into tiles of dimensions `BM*BN`, where each tile is processed by a single MDRangePolicy iteration over the block indices. Within each block, the following steps occur:
-
-1. **Local Buffering for Temporal and Spatial Locality:**
-   - **Local Copy:**  
-     For each block of \(C\), the kernel allocates a small, stack-based two-dimensional array `local_C` of size \(BM \times BN\). This local array is used to hold the partial results of the block multiplication. Initially, it is loaded with \(\beta \times C\), ensuring that the final update preserves the contribution from the original \(C\) (scaled by \(\beta\)).
-   - **Blocking Over \(K\):**  
-     Instead of processing the entire \(K\) dimension at once, the kernel divides \(K\) into smaller chunks of size \(BK\). For each such sub-block, the corresponding sub-tiles of \(A\) and \(B\) are used to update `local_C`. Because these updates occur in the fast, on-chip (or register) memory, the data can be reused multiple times with very low latency.
-   - **Improved Locality:**  
-     By keeping each \(BM \times BN\) block in local memory, the algorithm reduces the number of global memory accesses for \(C\) during the innermost loops. This leads to fewer L1 cache misses and better spatial locality, as the local array is stored contiguously in memory.
-
-2. **Parallelization via MDRangePolicy:**
-   - **2D Tiling:**  
-     The kernel uses a 2D MDRangePolicy to divide the work over the \(i\) and \(j\) dimensions (the block indices of \(C\)). Each iteration of the policy handles one block (tile) of \(C\). Because these blocks are processed independently, they can be executed in parallel without inter-dependency.
-   - **Reduced Synchronization Overhead:**  
-     Once the local block computation is complete, the result is written back to the global memory. This design minimizes the need for inter-thread synchronization, as each block's computation is self-contained.
-   - **Load Balancing:**  
-     Partitioning work in this way provides a natural granularity for parallel execution. However, the number of blocks per matrix (especially for smaller matrices) may limit the scaling. For larger matrices, however, many more blocks are available, which helps in distributing the work evenly among available threads.
-
-3. **Impact on Cache Miss Rates and Performance:**
-   - **Spatial Locality:**  
-     The contiguous allocation of `local_C` ensures that once a block of data is brought into cache, multiple operations are performed on it, thereby reducing the effective cache miss rate.
-   - **Temporal Locality:**  
-     Each block is reused across all iterations over the \(K\) sub-blocks before the final write-back to \(C\), which helps to amortize the cost of loading data from main memory.
-   - **Overall Throughput:**  
-     The experimental results show that, by carefully tuning the block dimensions, significant performance improvements can be achieved (e.g., for the 1000×1000×1000 matrix, a configuration such as 32×32×32 yields a runtime of 0.485 s and 4.13 GFLOP/s compared to far lower throughput for less-optimal configurations).
-
----
-
-
-In summary, tuning the block dimensions in a cache-blocked matrix multiplication kernel can dramatically improve performance. By carefully choosing parameters that fit the processor’s cache hierarchy and by employing strategies (such as local buffering and MDRangePolicy-based tiling) to maximize data reuse, the performance—measured in GFLOP/s and runtime—can be significantly enhanced. Future work might explore dynamic tuning, further increasing the level of parallelism (e.g., using nested policies), or leveraging scratch memory for additional improvements.
-
-### Conclusion
-
-The revised kernel, which partitions the global matrix multiplication into blocks using Kokkos's MDRangePolicy and employs local buffering for each \( C \) block, shows considerable performance improvements. Based on our experiments:
-
-- **Optimal Block Configuration:**  
-  For all tested matrix sizes, the **32×32×32 configuration** consistently yields the highest GFLOP/s and lowest runtime in the medium and large cases. For the smallest problem, the performance differences are less pronounced given the small absolute runtime values.
-
-- **Cache Locality Improvements:**  
-  The use of local buffering significantly reduces L1 cache misses (with rates as low as 0.40%–0.45% for the 32×32×32 configuration), which translates into better temporal and spatial data reuse. Although LLC miss rates are higher in some cases, the overall performance gain suggests that the kernel is effectively leveraging on-chip memory and registers.
-
-- **Strong Scaling and Concurrency:**  
-  Our final strong scaling study indicates that, under the current design and with 8 available threads, additional threading does not further reduce runtime. This is expected for a memory-bound kernel where increasing concurrency beyond a certain point only increases contention on memory bandwidth.
-
-In summary, by tuning the block dimensions and redesigning the kernel with local buffering and a 2D MDRangePolicy, we have maximized performance for this cache-blocked matrix multiplication. The 32×32×32 configuration demonstrates the best trade-off between computational throughput and cache efficiency, confirming the importance of carefully balancing block size to align with the processor’s cache hierarchy.
-
-
-This comprehensive analysis confirms that using the 32×32×32 block configuration maximizes performance by optimally balancing computation and memory reuse, even though the kernel becomes memory-bound, which limits the benefits of adding more threads. Future improvements may involve exploring nested parallelism or using scratch memory to further reduce cache misses.
-
-### Q5: Final strong scaling and performance analysis 
-## Final Performance and Strong Scaling Study
+## Q5: Final strong scaling and performance analysis 
 
 ### Methodology
 
