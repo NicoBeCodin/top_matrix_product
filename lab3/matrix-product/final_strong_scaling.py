@@ -16,7 +16,7 @@ block_config = (32, 32, 32)  # Best performing block configuration from earlier 
 executable = "./build/src/top.matrix_product"  # Use your chosen executable
 
 # Output directory for final study plots
-plot_dir = "final_plots"
+plot_dir = "final_plots_proc_bind_false"
 os.makedirs(plot_dir, exist_ok=True)
 
 print("Block config : ", block_config)
